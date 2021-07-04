@@ -4,9 +4,10 @@ from maubot import Plugin
 from maubot.handlers import event, command
 from maubot.matrix import MaubotMatrixClient
 from mautrix.errors import MNotFound
-from mautrix.types import EventType, MessageEvent, RelationType, MessageType, StateEvent, Membership
+from mautrix.types import EventType, MessageEvent, RelationType, MessageType, StateEvent, Membership, RelatesTo
 
 from .databases import SupportRoomDatabase, TicketDatabase
+from .ticket import Ticket
 
 
 class TicketListener:
@@ -15,6 +16,8 @@ class TicketListener:
     rDB: SupportRoomDatabase
     tDB: TicketDatabase
 
+    tickets: dict
+
     ticket_queue: dict = {}
 
     def __init__(self, plugin: Plugin, roomDB: SupportRoomDatabase, ticketDB: TicketDatabase):
@@ -22,6 +25,17 @@ class TicketListener:
         self.plugin = plugin
         self.rDB = roomDB
         self.tDB = ticketDB
+        self.tickets = {}
+
+        saved_tickets = self.tDB.get_tickets()
+        for ticket in saved_tickets:
+            if ticket.mirror_room not in self.tickets:
+                self.tickets[ticket.mirror_room] = {
+                    ticket.mirror_message: ticket
+                }
+            else:
+                self.tickets[ticket.mirror_room][ticket.mirror_message] = ticket
+        self.plugin.log.debug(self.tickets)
 
     @event.on(EventType.ROOM_MEMBER)
     async def on_member(self, evt: StateEvent):
@@ -44,10 +58,32 @@ class TicketListener:
     async def on_message(self, evt: MessageEvent):
         try:
             direct_rooms = await self.client.get_account_data(EventType.DIRECT)
+            if evt.content.relates_to.rel_type is RelationType.REPLY and evt.room_id in self.tickets and evt.content \
+                    .relates_to.event_id in \
+                    self.tickets[evt.room_id]:
+                self.plugin.log.info("Hey")
+                if evt.content.msgtype is not MessageType.TEXT:
+                    await evt.respond("Bitte antworte nur mit Text!")
+                    return
+
+                if evt.content.formatted_body is not None:
+                    msg = evt.content.formatted_body
+                else:
+                    msg = evt.content.body
+
+                final = f"<b><h5>Antwort:<h5></b><hr>{msg}<hr><em>Dein Ticket ist nun geschlossen.</em>"
+
+                ticket: Ticket = self.tickets[evt.room_id][evt.content.relates_to.event_id]
+                reply = RelatesTo()
+                reply.rel_type = RelationType.REPLY
+                reply.event_id = ticket.original_message
+                await self.client.send_text(ticket.original_room, None, final, MessageType.TEXT, reply)
+                await evt.respond("Deine Antwort wurde gesendet und das Ticket geschlossen.")
+                del self.tickets[evt.room_id][ticket.mirror_message]
+                self.tDB.delete_ticket_by_id(ticket.id)
             if evt.sender in direct_rooms and evt.room_id in direct_rooms[evt.sender]:
                 if evt.content.relates_to.rel_type is RelationType.REPLY:
                     if evt.room_id in self.ticket_queue:
-                        self.plugin.log.debug("Hallo")
                         ticket = self.ticket_queue[evt.room_id]
                         target_room = self.rDB.get_target_by_id(evt.content.body)
                         if target_room is None:
@@ -56,11 +92,17 @@ class TicketListener:
                                 "Antworte dieses Mal auf diese Nachricht")
                             return
                         msg = f"<b><h5>Neues Ticket:<h5></b><hr>{ticket['content']}<hr><em>Gesendet " \
-                              f"von {ticket['creator']}. "
+                              f"von {ticket['creator']}.<br><br>Wenn du auf diese Nachricht antwortest wird deine " \
+                              f"Nachricht weitergeleitet."
 
                         mirror_msg = await self.plugin.client.send_text(target_room["room_id"], None, msg)
                         self.tDB.create_new_ticket(ticket["original_msg"], evt.room_id, mirror_msg,
                                                    target_room["room_id"], ticket["creator"])
+                        if target_room["room_id"] not in self.tickets:
+                            self.tickets[target_room["room_id"]] = {}
+
+                        self.tickets[target_room["room_id"]][mirror_msg] = self.tDB.get_ticket_by_mirror_message(
+                            mirror_msg, target_room["room_id"])
                         await evt.respond("Dein Ticket wurde übermittelt. Du wirst hier so schnell wie es geht "
                                           "eine Antwort erhalten.")
                         del self.ticket_queue[evt.room_id]

@@ -125,3 +125,9 @@ class TicketDatabase:
 
     def delete_ticket_by_id(self, identifier):
         self.db.execute(self.tickets.delete().where(self.tickets.c.id == identifier))
+
+    def get_tickets(self) -> List[Ticket]:
+        tickets = []
+        for ticket in self.db.execute(self.tickets.select()).fetchall():
+            tickets.append(Ticket(ticket))
+        return tickets
