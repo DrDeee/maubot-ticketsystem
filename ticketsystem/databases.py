@@ -104,7 +104,6 @@ class TicketDatabase:
 
     def create_new_ticket(self, original_message: str, original_room: str, mirror_message: str, mirror_room: str,
                           creator: str):
-        self.plugin.log.debug(f"{original_message} {original_room} {mirror_message} {mirror_room} + {creator}")
         self.db.execute(self.tickets.insert().values(original_room=original_room,
                                                      original_message=original_message,
                                                      mirrored_message=mirror_message,
@@ -121,7 +120,7 @@ class TicketDatabase:
         return Ticket(
             self.db.execute(self.tickets.select().where(and_(self.tickets.c.mirrored_message == mirror_message,
                                                              self.tickets.c.mirrored_room == mirror_room))) \
-                .fetchOne())
+                .fetchone())
 
     def delete_ticket_by_id(self, identifier):
         self.db.execute(self.tickets.delete().where(self.tickets.c.id == identifier))
